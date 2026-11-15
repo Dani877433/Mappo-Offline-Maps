@@ -1,0 +1,103 @@
+name: Genera curve e toponimi Liguria
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/liguria-terrain.yml'
+permissions:
+  contents: write
+jobs:
+  terrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa GDAL
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdal-bin python3-gdal
+      - name: Scarica DEM e genera curve ogni 20 metri
+        run: |
+          mkdir -p output dem
+          /usr/bin/python3 - <<'PY'
+          import math,urllib.request,os
+          from osgeo import gdal,ogr
+          w,s,e,n=7.45,43.72,10.15,44.75
+          z=9
+          tx=lambda lon:int((lon+180)/360*2**z)
+          ty=lambda lat:int((1-math.asinh(math.tan(math.radians(lat)))/math.pi)/2*2**z)
+          paths=[]
+          for x in range(tx(w),tx(e)+1):
+            for y in range(ty(n),ty(s)+1):
+              path=f"dem/{z}-{x}-{y}.tif"
+              url=f"https://s3.amazonaws.com/elevation-tiles-prod/geotiff/{z}/{x}/{y}.tif"
+              print("DEM",url,flush=True)
+              urllib.request.urlretrieve(url,path)
+              paths.append(path)
+          vrt=gdal.BuildVRT("dem/merged.vrt",paths);assert vrt;vrt=None
+          warped=gdal.Warp("dem/cropped.tif","dem/merged.vrt",format="GTiff",outputBounds=[w,s,e,n],dstSRS="EPSG:4326",outputType=gdal.GDT_Float32)
+          assert warped;warped=None
+          source=gdal.Open("dem/cropped.tif")
+          driver=ogr.GetDriverByName("GeoJSON")
+          dest=driver.CreateDataSource("output/mappo-liguria-contours.geojson")
+          layer=dest.CreateLayer("contours",srs=source.GetSpatialRef(),geom_type=ogr.wkbLineString)
+          layer.CreateField(ogr.FieldDefn("elevation",ogr.OFTInteger))
+          band=source.GetRasterBand(1);nodata=band.GetNoDataValue()
+          gdal.ContourGenerate(band,20.0,0,[],int(nodata is not None),nodata or 0,layer,-1,0)
+          dest=None;source=None
+          size=os.path.getsize("output/mappo-liguria-contours.geojson")
+          print("CONTOURS_BYTES",size,flush=True)
+          assert size>1000
+          PY
+      - name: Estrai nomi geografici OSM
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request,urllib.parse,time,os
+          w,s,e,n=7.45,43.72,10.15,44.75
+          features=[];seen=set()
+          # Suddivisione in quadranti per evitare richieste Overpass troppo estese.
+          for row in range(2):
+            for col in range(3):
+              a=w+(e-w)*col/3;b=w+(e-w)*(col+1)/3
+              c=s+(n-s)*row/2;d=s+(n-s)*(row+1)/2
+              q=f'[out:json][timeout:150];(node["name"]["place"]({c},{a},{d},{b});node["name"]["natural"~"peak|saddle|volcano"]({c},{a},{d},{b});node["name"]["tourism"~"viewpoint|alpine_hut|wilderness_hut"]({c},{a},{d},{b}););out body;'
+              payload=urllib.parse.urlencode({"data":q}).encode()
+              data=None
+              for host in ["https://overpass.kumi.systems/api/interpreter","https://overpass-api.de/api/interpreter"]:
+                try:
+                  req=urllib.request.Request(host,data=payload,headers={"User-Agent":"Mappo-regional-offline/1.0"})
+                  with urllib.request.urlopen(req,timeout=175) as response:data=json.load(response)
+                  break
+                except Exception as ex:print("Overpass retry",host,str(ex),flush=True);time.sleep(3)
+              if data is None:raise SystemExit(f"Overpass failed quadrant {row},{col}")
+              for el in data.get("elements",[]):
+                tags=el.get("tags",{});name=tags.get("name:it") or tags.get("name")
+                if not name or el["id"] in seen:continue
+                seen.add(el["id"])
+                features.append({"type":"Feature","geometry":{"type":"Point","coordinates":[el["lon"],el["lat"]]},"properties":{"name":name,"category":tags.get("place") or tags.get("natural") or tags.get("tourism") or "localita"}})
+              print("Quadrant",row,col,"total names",len(features),flush=True)
+          with open("output/mappo-liguria-names.geojson","w",encoding="utf-8") as f:json.dump({"type":"FeatureCollection","features":features},f,ensure_ascii=False)
+          assert len(features)>0
+          print("NAMES_BYTES",os.path.getsize("output/mappo-liguria-names.geojson"))
+          PY
+      - name: Pubblica file e dimensioni misurate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view liguria-v1 >/dev/null 2>&1 || gh release create liguria-v1 --title "Liguria - Mappo zoom 15"
+          gh release upload liguria-v1 output/mappo-liguria-contours.geojson output/mappo-liguria-names.geojson --clobber
+          python3 - <<'PY'
+          import json,os
+          p="catalog.json"
+          with open(p) as f:c=json.load(f)
+          r=next(x for x in c["regions"] if x["id"]=="liguria")
+          base="https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/"
+          r["extras"]=[{"type":"contours","filename":"mappo-liguria-contours.geojson","url":base+"mappo-liguria-contours.geojson","size_bytes":os.path.getsize("output/mappo-liguria-contours.geojson")},{"type":"names","filename":"mappo-liguria-names.geojson","url":base+"mappo-liguria-names.geojson","size_bytes":os.path.getsize("output/mappo-liguria-names.geojson")}]
+          r["includes_contours"]=True;r["includes_names"]=True
+          print("TOTAL_EXTRA_BYTES",sum(x["size_bytes"] for x in r["extras"]))
+          with open(p,"w") as f:json.dump(c,f,indent=2,ensure_ascii=False);f.write("\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          git diff --cached --quiet || { git commit -m "Publish regional contours and toponyms"; git pull --rebase origin main; git push origin HEAD:main; }
