@@ -1,0 +1,66 @@
+name: Pubblica mappa Liguria
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/liguria.yml'
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa PMTiles
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request
+          req=urllib.request.Request("https://api.github.com/repos/protomaps/go-pmtiles/releases/latest",headers={"User-Agent":"Mappo-Maps"})
+          with urllib.request.urlopen(req) as f: assets=json.load(f)["assets"]
+          a=next(a for a in assets if "linux" in a["name"].lower() and ("x86_64" in a["name"].lower() or "amd64" in a["name"].lower()) and a["name"].endswith((".tar.gz",".zip")))
+          urllib.request.urlretrieve(a["browser_download_url"],"/tmp/pmtiles"+(".zip" if a["name"].endswith(".zip") else ".tar.gz"))
+          PY
+          mkdir -p /tmp/pmtiles-bin
+          if test -f /tmp/pmtiles.zip; then unzip -q /tmp/pmtiles.zip -d /tmp/pmtiles-bin; else tar -xzf /tmp/pmtiles.tar.gz -C /tmp/pmtiles-bin; fi
+          sudo install "$(find /tmp/pmtiles-bin -type f -name pmtiles -print -quit)" /usr/local/bin/pmtiles
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j2 tile-join
+          sudo install /tmp/tippecanoe/tile-join /usr/local/bin/tile-join
+      - name: Genera cartografia vettoriale Liguria
+        run: |
+          mkdir -p output
+          pmtiles extract https://build.protomaps.com/20261114.pmtiles output/liguria.pmtiles --bbox="7.45,43.72,10.15,44.75" --maxzoom=15 --download-threads=4
+          tile-join -f -o output/mappo-liguria.mbtiles output/liguria.pmtiles
+          python3 - <<'PY'
+          import os,sqlite3
+          p="output/mappo-liguria.mbtiles"
+          db=sqlite3.connect(p)
+          meta=dict(db.execute("select name,value from metadata"))
+          n=db.execute("select count(*) from tiles").fetchone()[0]
+          size=os.path.getsize(p)
+          print("Bytes:",size,"Tiles:",n,"Format:",meta.get("format"))
+          assert n>0 and meta.get("format") in ("pbf","mvt") and size<512*1024*1024
+          PY
+      - name: Pubblica release pubblica
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view liguria-v1 >/dev/null 2>&1 || gh release create liguria-v1 --title "Liguria - Mappo zoom 15" --notes "Cartografia vettoriale Protomaps, zoom massimo 15. Pacchetto sperimentale; GeoJSON curve di livello e toponimi non inclusi."
+          gh release upload liguria-v1 output/mappo-liguria.mbtiles --clobber
+      - name: Aggiorna catalogo pubblico
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json,os
+          p="catalog.json"
+          with open(p) as f: c=json.load(f)
+          r=next(x for x in c["regions"] if x["id"]=="liguria")
+          r.update(status="available",size_bytes=os.path.getsize("output/mappo-liguria.mbtiles"),url="https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/mappo-liguria.mbtiles")
+          with open(p,"w") as f: json.dump(c,f,ensure_ascii=False,indent=2);f.write("\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          git diff --cached --quiet || { git commit -m "Publish measured Liguria download"; git pull --rebase origin main; git push origin HEAD:main; }
