@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "regions": [
+    {
+      "id": "liguria",
+      "name": "Liguria",
+      "status": "preparing",
+      "zoom": 15,
+      "description": "Cartografia vettoriale regionale; curve e toponimi extra ancora da integrare"
+    }
+  ]
+}
