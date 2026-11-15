@@ -50,6 +50,7 @@ jobs:
           assert size>1000
           PY
       - name: Estrai nomi geografici OSM
+        continue-on-error: true
         run: |
           python3 - <<'PY'
           import json,urllib.request,urllib.parse,time,os
@@ -85,15 +86,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view liguria-v1 >/dev/null 2>&1 || gh release create liguria-v1 --title "Liguria - Mappo zoom 15"
-          gh release upload liguria-v1 output/mappo-liguria-contours.geojson output/mappo-liguria-names.geojson --clobber
+          gh release upload liguria-v1 output/mappo-liguria-contours.geojson --clobber
+          if test -s output/mappo-liguria-names.geojson; then gh release upload liguria-v1 output/mappo-liguria-names.geojson --clobber; fi
           python3 - <<'PY'
           import json,os
           p="catalog.json"
           with open(p) as f:c=json.load(f)
           r=next(x for x in c["regions"] if x["id"]=="liguria")
           base="https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/"
-          r["extras"]=[{"type":"contours","filename":"mappo-liguria-contours.geojson","url":base+"mappo-liguria-contours.geojson","size_bytes":os.path.getsize("output/mappo-liguria-contours.geojson")},{"type":"names","filename":"mappo-liguria-names.geojson","url":base+"mappo-liguria-names.geojson","size_bytes":os.path.getsize("output/mappo-liguria-names.geojson")}]
-          r["includes_contours"]=True;r["includes_names"]=True
+          r["extras"]=[{"type":"contours","filename":"mappo-liguria-contours.geojson","url":base+"mappo-liguria-contours.geojson","size_bytes":os.path.getsize("output/mappo-liguria-contours.geojson")}]
+          if os.path.isfile("output/mappo-liguria-names.geojson"):
+            r["extras"].append({"type":"names","filename":"mappo-liguria-names.geojson","url":base+"mappo-liguria-names.geojson","size_bytes":os.path.getsize("output/mappo-liguria-names.geojson")})
+          r["includes_contours"]=True
+          r["includes_names"]=len(r["extras"])>1
           print("TOTAL_EXTRA_BYTES",sum(x["size_bytes"] for x in r["extras"]))
           with open(p,"w") as f:json.dump(c,f,indent=2,ensure_ascii=False);f.write("\n")
           PY
