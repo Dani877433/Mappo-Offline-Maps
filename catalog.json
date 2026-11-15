@@ -8,7 +8,17 @@
       "zoom": 15,
       "description": "Cartografia vettoriale regionale; curve e toponimi extra ancora da integrare",
       "size_bytes": 200196096,
-      "url": "https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/mappo-liguria.mbtiles"
+      "url": "https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/mappo-liguria.mbtiles",
+      "extras": [
+        {
+          "type": "contours",
+          "filename": "mappo-liguria-contours.geojson",
+          "url": "https://github.com/Dani877433/Mappo-Offline-Maps/releases/download/liguria-v1/mappo-liguria-contours.geojson",
+          "size_bytes": 114065488
+        }
+      ],
+      "includes_contours": true,
+      "includes_names": false
     }
   ]
 }
