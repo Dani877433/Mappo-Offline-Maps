@@ -1,0 +1,72 @@
+name: Genera toponimi offline Valle d'Aosta
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/generate-valle-aosta-names.yml'
+permissions:
+  contents: write
+jobs:
+  names:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa parser OSM
+        run: python3 -m pip install --user osmium
+      - name: Scarica estratto regionale OSM
+        run: |
+          curl --fail --location --retry 4 --retry-delay 8 --connect-timeout 30 \
+            --max-time 900 \
+            "https://download.geofabrik.de/europe/italy/nord-ovest-latest.osm.pbf" \
+            -o /tmp/valle-aosta.osm.pbf
+          test -s /tmp/valle-aosta.osm.pbf
+          ls -lh /tmp/valle-aosta.osm.pbf
+      - name: Genera nomi geografici
+        run: |
+          mkdir -p output
+          cat > /tmp/names.py <<'PY'
+          import osmium,json,os
+          features=[]
+          seen=set()
+          priorities={"city":0,"town":1,"village":2,"hamlet":3,"suburb":4,"peak":5,"saddle":6,"locality":7,"neighbourhood":8}
+          class Names(osmium.SimpleHandler):
+            def node(self,n):
+              if not (6.75 <= n.location.lon <= 8.00 and 45.45 <= n.location.lat <= 46.02): return
+              tags=n.tags
+              name=tags.get("name:it") or tags.get("name")
+              if not name or not n.location.valid(): return
+              category=tags.get("place")
+              if not category and tags.get("natural") in ("peak","saddle","ridge","valley"):
+                category=tags.get("natural")
+              if not category and tags.get("tourism") in ("viewpoint","alpine_hut","wilderness_hut"):
+                category=tags.get("tourism")
+              if not category: return
+              key=(round(n.location.lon,5),round(n.location.lat,5),name)
+              if key in seen:return
+              seen.add(key)
+              features.append({"type":"Feature","geometry":{"type":"Point","coordinates":[round(n.location.lon,6),round(n.location.lat,6)]},"properties":{"name":name[:60],"category":category,"priority":priorities.get(category,9)}})
+          Names().apply_file("/tmp/valle-aosta.osm.pbf",locations=False)
+          features.sort(key=lambda f:(f["properties"]["priority"],f["properties"]["name"]))
+          output="output/mappo-valle-aosta-names.geojson"
+          with open(output,"w",encoding="utf-8") as fp:
+            json.dump({"type":"FeatureCollection","features":features},fp,ensure_ascii=False,separators=(",",":"))
+          size=os.path.getsize(output)
+          print("Toponimi:",len(features),"dimensione:",size,flush=True)
+          assert len(features)>100,"Estrazione troppo piccola"
+          assert size<12*1024*1024,"File oltre il limite di 12 MB dell'app"
+          for name in ("Aosta",):
+            assert any(f["properties"]["name"]==name for f in features),f"Manca città: {name}"
+          PY
+          python3 /tmp/names.py
+      - name: Pubblica toponimi nella release regionale
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view valle-aosta-v1 >/dev/null 2>&1 || gh release create valle-aosta-v1 --title "Mappo Valle d'Aosta" --notes "Cartografia e toponimi offline"
+          gh release upload valle-aosta-v1 output/mappo-valle-aosta-names.geojson --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mappo-valle-aosta-names
+          path: output/mappo-valle-aosta-names.geojson
+          retention-days: 14
