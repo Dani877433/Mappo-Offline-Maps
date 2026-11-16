@@ -1,0 +1,51 @@
+name: Genera pacchetto regionale Valle d'Aosta
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-valle-aosta.yml'
+permissions:
+  contents: write
+jobs:
+  valle-aosta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa pmtiles e tile-join
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request
+          req=urllib.request.Request("https://api.github.com/repos/protomaps/go-pmtiles/releases/latest",headers={"User-Agent":"Mappo"})
+          with urllib.request.urlopen(req) as f: assets=json.load(f)["assets"]
+          a=next(a for a in assets if "linux" in a["name"].lower() and ("x86_64" in a["name"].lower() or "amd64" in a["name"].lower()) and a["name"].endswith((".tar.gz",".zip")))
+          urllib.request.urlretrieve(a["browser_download_url"],"/tmp/pmtiles"+(".zip" if a["name"].endswith(".zip") else ".tar.gz"))
+          PY
+          mkdir -p /tmp/pmtiles-bin
+          if test -f /tmp/pmtiles.zip; then unzip -q /tmp/pmtiles.zip -d /tmp/pmtiles-bin; else tar -xzf /tmp/pmtiles.tar.gz -C /tmp/pmtiles-bin; fi
+          sudo install "$(find /tmp/pmtiles-bin -type f -name pmtiles -print -quit)" /usr/local/bin/pmtiles
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j2 tile-join
+          sudo install /tmp/tippecanoe/tile-join /usr/local/bin/tile-join
+      - name: Estrai area Valle d'Aosta a zoom 15
+        run: |
+          mkdir -p output
+          pmtiles extract https://build.protomaps.com/20261114.pmtiles output/valle-aosta.pmtiles --bbox="6.75,45.45,8.00,46.02" --maxzoom=15 --download-threads=4
+          tile-join -f -o output/mappo-valle-aosta.mbtiles output/valle-aosta.pmtiles
+          python3 - <<'PY'
+          import sqlite3,os
+          p="output/mappo-valle-aosta.mbtiles"
+          db=sqlite3.connect(p)
+          meta=dict(db.execute("select name,value from metadata"))
+          tiles=db.execute("select count(*) from tiles").fetchone()[0]
+          size=os.path.getsize(p)
+          print("MBTiles bytes:",size,"tiles:",tiles,"format:",meta.get("format"))
+          assert tiles>0 and meta.get("format") in ("pbf","mvt")
+          assert size<=512*1024*1024, "Pacchetto supera limite download Mappo 512 MB"
+          PY
+      - name: Pubblica file regionale scaricabile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view valle-aosta-v1 >/dev/null 2>&1 || gh release create valle-aosta-v1 --title "Mappo Valle d'Aosta - cartografia vettoriale" --notes "Pacchetto sperimentale della zona rettangolare comprendente la Valle d'Aosta, zoom 15. Curve di livello e toponimi GeoJSON non inclusi in questo file."
+          gh release upload valle-aosta-v1 output/mappo-valle-aosta.mbtiles --clobber
